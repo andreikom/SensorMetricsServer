@@ -1,7 +1,7 @@
 package com.sensormetrics.server.storage.filesystem;
 
 import com.sensormetrics.server.models.HourlyTempModel;
-import com.sensormetrics.server.storage.StorageProvider;
+import com.sensormetrics.server.storage.TemperatureStorageProvider;
 import org.joda.time.DateTime;
 import org.springframework.stereotype.Repository;
 import org.apache.commons.io.FileUtils;
@@ -9,21 +9,25 @@ import org.apache.commons.io.FileUtils;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.Charset;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Repository
-public class FileSystemStore implements StorageProvider {
+public class FileSystemStore implements TemperatureStorageProvider {
 
     private final String SLASH = System.getProperty("os.name").toLowerCase().contains("win") ? "\\" : "/";
     private final String FS_STORE_PATH = System.getProperty("user.home") + SLASH + "sensordata";
     private final String TEMPERATURES_PATH = FS_STORE_PATH + SLASH + "temperature";
 
     @Override
-    public void saveTemp(long sensorId, short temp) throws IOException {
+    public void saveTemperature(long sensorId, short temp) throws IOException {
         FileUtils.write(
                 new File(TEMPERATURES_PATH + SLASH + sensorId + SLASH +
                         java.time.LocalDate.now() + SLASH + new DateTime().hourOfDay().get() + SLASH + temp),
@@ -49,6 +53,25 @@ public class FileSystemStore implements StorageProvider {
         } else {
             return null;
         }
+    }
+
+    @Override
+    public Set<String> getAllSensorsDailyTemperatures() {
+        final int maxDepth = 2;
+        final Path rootPath = Paths.get(TEMPERATURES_PATH + SLASH);
+        final int rootPathDepth = rootPath.getNameCount();
+        try {
+            return Files.walk(rootPath, maxDepth)
+                    .filter(e -> e.toFile().isDirectory())
+                    .filter(e -> e.getNameCount() - rootPathDepth == maxDepth)
+                    .map(Path::toString)
+                    .collect(Collectors.toSet());
+        } catch (IOException e) {
+            String msg = "Error occurred while listing all daily directories";
+            System.out.println(msg);
+            e.printStackTrace();
+        }
+        return Set.of();
     }
 
     @Override

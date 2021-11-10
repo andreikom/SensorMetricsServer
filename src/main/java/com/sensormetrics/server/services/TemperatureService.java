@@ -1,13 +1,15 @@
 package com.sensormetrics.server.services;
 
 import com.sensormetrics.server.models.HourlyTempModel;
-import com.sensormetrics.server.storage.StorageProvider;
+import com.sensormetrics.server.storage.TemperatureStorageProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.PostConstruct;
 import java.io.IOException;
+import java.time.Duration;
 import java.time.LocalDate;
+import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -23,29 +25,39 @@ import java.util.stream.Collectors;
 @Service
 public class TemperatureService {
 
-    private final StorageProvider storageProvider;
+    private final TemperatureStorageProvider temperatureStorageProvider;
     // < Date, <SensorId --> <Hour>,<Temp>> >
     private final Map<String, Map<Integer, HourlyTempModel>> dailySensorTempCache = new HashMap<>();
-    private final int DAYS_TO_TRACK = 7;
     private List<String> dates;
     public final int SENSORS_ID_RANGE = 100;
 
     @Autowired
-    public TemperatureService(StorageProvider storageProvider) {
-        this.storageProvider = storageProvider;
+    public TemperatureService(TemperatureStorageProvider temperatureStorageProvider) {
+        this.temperatureStorageProvider = temperatureStorageProvider;
     }
 
     @PostConstruct
     public void init() {
         initWeeklySensorTempCache();
         scheduleCacheRefresh();
+        scheduleDailyCleanup();
     }
 
     private void scheduleCacheRefresh() {
         Executors.newSingleThreadScheduledExecutor()
                 .scheduleWithFixedDelay(this::initWeeklySensorTempCache,
                         0,
-                        1, TimeUnit.HOURS);
+                        30, TimeUnit.SECONDS);
+    }
+
+    private void scheduleDailyCleanup() {
+        ZonedDateTime now = ZonedDateTime.now();
+        ZonedDateTime nextRun = now.withHour(0).withMinute(0).withSecond(0);
+        long initialDelay = Duration.between(now, nextRun).getSeconds();
+        Executors.newSingleThreadScheduledExecutor()
+                .scheduleWithFixedDelay(this::cleanOldDailyEntriesIfNeeded,
+                        initialDelay,
+                        TimeUnit.DAYS.toSeconds(1), TimeUnit.SECONDS);
     }
 
     private void initWeeklySensorTempCache() {
@@ -53,7 +65,7 @@ public class TemperatureService {
         this.dates.forEach(date -> {
             for (int i = 1; i <= SENSORS_ID_RANGE; i++) {
                 Map<Integer, HourlyTempModel> dateToSensorIdMap =
-                        storageProvider.getHourlyTempsBySensorIDAndDate(i, date);
+                        temperatureStorageProvider.getHourlyTempsBySensorIDAndDate(i, date);
                 if (dateToSensorIdMap != null) {
                     Map<Integer, HourlyTempModel> existingEntry = dailySensorTempCache.put(date, dateToSensorIdMap);
                     if (existingEntry != null) {
@@ -62,23 +74,25 @@ public class TemperatureService {
                 }
             }
         });
-        cleanOldDailyEntriesIfNeeded();
     }
 
     private void cleanOldDailyEntriesIfNeeded() {
+        Set<String> allDailyTemperatures = temperatureStorageProvider.getAllSensorsDailyTemperatures();
         Set<String> datesToClean = dates.stream()
-                .filter(date -> !getDatesForTheLastWeek().contains(date))
+                .filter(date -> !allDailyTemperatures.contains(date))
                 .collect(Collectors.toSet());
         if (!datesToClean.isEmpty()) {
             datesToClean.forEach(date -> {
                 dailySensorTempCache.remove(date);
-                storageProvider.cleanOldDailyEntry(date);
+                temperatureStorageProvider.cleanOldDailyEntry(date);
             });
+        } else {
+            System.out.println("Did not clean any old entries");
         }
     }
 
     public void addTemp(long sensorId, short temp) throws IOException {
-        storageProvider.saveTemp(sensorId, temp);
+        temperatureStorageProvider.saveTemperature(sensorId, temp);
     }
 
     public short getDailyMaxTempByDateAndById(int sensorId, String date) {
@@ -236,6 +250,7 @@ public class TemperatureService {
         ArrayList<String> dates = new ArrayList<>();
         LocalDate today = LocalDate.now();
         dates.add(today.toString());
+        int DAYS_TO_TRACK = 6; // excludes today
         for (int i = 1; i <= DAYS_TO_TRACK; i++) {
             LocalDate date = today.minus(i, ChronoUnit.DAYS);
             dates.add(date.toString());
